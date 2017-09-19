@@ -407,6 +407,42 @@ def _do_compute_rcontroller(gs, cluster_guid, rcontroller, g):
     app.logger.error('Rcontroller id=%s has no "spec.selector" attribute',
                      rcontroller_id)
 
+def _do_compute_deployment(gs, cluster_guid, deployment, g):
+  assert isinstance(gs, global_state.GlobalState)
+  assert utilities.valid_string(cluster_guid)
+  assert utilities.is_wrapped_object(deployment, 'Deployment')
+  assert isinstance(g, ContextGraph)
+
+  deployment_id = deployment['id']
+  deployment_guid = 'Deployment:' + deployment_id
+  g.add_resource(deployment_guid, deployment['annotations'],
+                 'Deployment',
+                 deployment['timestamp'], deployment['properties'])
+
+  # Cluster contains Deployment
+  g.add_relation(cluster_guid, deployment_guid, 'contains')
+
+  # Pods that are monitored by this deployment.
+  # Use the deployment['spec']['selector'] key/value pairs to find matching
+  # pods.
+  selector = utilities.get_attribute(
+      deployment, ['properties', 'spec', 'selector','matchLabels'])
+  if selector:
+    if not isinstance(selector, dict):
+      msg = ('Deployment id=%s has an invalid "selector" value' %
+             deployment_id)
+      app.logger.error(msg)
+      raise collector_error.CollectorError(msg)
+
+    for pod in kubernetes.get_selected_pods(gs, selector):
+      pod_guid = 'Pod:' + pod['id']
+      # Deployment monitors Pod
+      g.add_relation(deployment_guid, pod_guid, 'monitors')
+  else:
+    app.logger.error('Deployment id=%s has no "spec.selector" attribute',
+                     deployment_id)
+
+
 
 def _do_compute_other_nodes(gs, cluster_guid, nodes_list, oldest_timestamp, g):
   """Adds nodes not in the node list but running pods to the graph.
@@ -520,6 +556,11 @@ def _do_compute_graph(gs, output_format):
   # ReplicationControllers
   for rcontroller in kubernetes.get_rcontrollers(gs):
     _do_compute_rcontroller(gs, cluster_guid, rcontroller, g)
+
+  # Deployments
+  for deployment in kubernetes.get_deployments(gs):
+    _do_compute_deployment(gs, cluster_guid, deployment, g)
+
 
   # Other nodes, not on the list, such as the Kubernetes master.
   _do_compute_other_nodes(gs, cluster_guid, nodes_list, oldest_timestamp, g)

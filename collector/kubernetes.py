@@ -32,11 +32,11 @@ import requests
 import collector_error
 import metrics
 import utilities
-
+import urllib3
 
 ## Kubernetes APIs
 
-KUBERNETES_API = 'https://%s:%s/api/v1'
+KUBERNETES_API = 'https://%s:%s'
 
 
 def get_kubernetes_base_url():
@@ -140,6 +140,8 @@ def fetch_data(gs, url):
     fetch the URL.
   """
   start_time = time.time()
+  app.testing = False
+
   if app.testing:
     # Read the data from a file.
     url_elements = url.split('/')
@@ -150,9 +152,9 @@ def fetch_data(gs, url):
   else:
     # Send the request to Kubernetes
     headers = get_kubernetes_headers()
-    v = requests.get(url, headers=headers, verify=False).json()
+    v = requests.get(url, headers=headers, verify=False)
     gs.add_elapsed(start_time, url, time.time() - start_time)
-    return v
+    return v.json()
 
 
 @utilities.global_state_arg
@@ -177,7 +179,7 @@ def get_nodes(gs):
     return nodes
 
   nodes = []
-  url = get_kubernetes_base_url() + '/nodes'
+  url = get_kubernetes_base_url() + '/api/v1/nodes'
   try:
     result = fetch_data(gs, url)
   except Exception:
@@ -250,7 +252,7 @@ def get_pods(gs):
     return pods
 
   pods = []
-  url = get_kubernetes_base_url() + '/pods'
+  url = get_kubernetes_base_url() + '/api/v1/pods'
   try:
     result = fetch_data(gs, url)
   except Exception:
@@ -411,7 +413,7 @@ def get_services(gs):
     return services
 
   services = []
-  url = get_kubernetes_base_url() + '/services'
+  url = get_kubernetes_base_url() + '/api/v1/services'
   try:
     result = fetch_data(gs, url)
   except Exception:
@@ -462,7 +464,7 @@ def get_rcontrollers(gs):
     return rcontrollers
 
   rcontrollers = []
-  url = get_kubernetes_base_url() + '/replicationcontrollers'
+  url = get_kubernetes_base_url() + '/api/v1/replicationcontrollers'
 
   try:
     result = fetch_data(gs, url)
@@ -489,4 +491,58 @@ def get_rcontrollers(gs):
   ret_value = gs.get_rcontrollers_cache().update('', rcontrollers, now)
   app.logger.info(
       'get_rcontrollers() returns %d rcontrollers', len(rcontrollers))
+  return ret_value
+
+
+@utilities.global_state_arg
+def get_deployments(gs):
+  """Gets the list of replication controllers in the current cluster.
+
+  Args:
+    gs: global state.
+
+  Returns:
+    list of wrapped replication controller objects.
+    Each element in the list is the result of
+    utilities.wrap_object(rcontroller, 'ReplicationController', ...)
+
+  Raises:
+    CollectorError: in case of failure to fetch data from Kubernetes.
+    Other exceptions may be raised due to exectution errors.
+  """
+  deployments, ts = gs.get_deployments_cache().lookup('')
+  if ts is not None:
+    app.logger.debug(
+        'get_deployments_cache() cache hit returns %d deployments',
+        len(deployments))
+    return deployments
+
+  deployments = []
+  url = get_kubernetes_base_url() + '/apis/apps/v1beta1/deployments'
+
+  try:
+    result = fetch_data(gs, url)
+  except Exception:
+    msg = 'fetching %s failed with exception %s' % (url, sys.exc_info()[0])
+    app.logger.exception(msg)
+    raise collector_error.CollectorError(msg)
+
+  now = time.time()
+  if not (isinstance(result, dict) and 'items' in result):
+    msg = 'invalid result when fetching %s' % url
+    app.logger.exception(msg)
+    raise collector_error.CollectorError(msg)
+
+  for deployment in result['items']:
+    name = utilities.get_attribute(deployment, ['metadata', 'name'])
+    if not utilities.valid_string(name):
+      # an invalid replication controller without a valid rcontroller ID.
+      continue
+
+    deployments.append(utilities.wrap_object(
+        deployment, 'Deployment', name, now))
+
+  ret_value = gs.get_deployments_cache().update('', deployments, now)
+  app.logger.info(
+      'get_deployments() returns %d deployments', len(deployments))
   return ret_value
